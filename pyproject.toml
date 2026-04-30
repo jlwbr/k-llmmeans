@@ -1,0 +1,22 @@
+[project]
+name = "k-llmmeans"
+version = "0.1.0"
+description = "k-LLMmeans clustering algorithm"
+readme = "README.md"
+authors = [
+    { name = "Joël Weber", email = "joel@joelweber.nl" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "dspy>=3.2.0",
+    "python-dotenv>=1.2.2",
+    "scikit-learn>=1.7.2",
+    "tqdm>=4.67.1",
+]
+
+[project.scripts]
+k-llmmeans = "k_llmmeans:main"
+
+[build-system]
+requires = ["uv_build>=0.9.28,<0.10.0"]
+build-backend = "uv_build"
