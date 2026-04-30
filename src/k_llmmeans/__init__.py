@@ -14,7 +14,7 @@ from sklearn.metrics import pairwise_distances_argmin
 from sklearn.utils.validation import check_is_fitted
 from tqdm.auto import tqdm
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 __all__ = ["kLLMmeans"]
 
 load_dotenv()
@@ -345,6 +345,13 @@ class kLLMmeans(BaseEstimator, ClusterMixin):
                     summary, stats = summarize_cluster_idx(i)
                     summaries[i] = summary
                     cluster_stats[i] = stats
+                    if self.verbose and int(stats["n_texts"]) > 0:
+                        print(
+                            f"[iter {iteration}] finished summary for cluster {i}: "
+                            f"{int(stats['latency_s'] * 1000)}ms, "
+                            f"input_chars={int(stats['input_chars'])}, "
+                            f"summary_chars={int(stats['summary_chars'])}"
+                        )
             else:
                 with ThreadPoolExecutor(max_workers=self.summary_workers) as executor:
                     futures = {
@@ -365,6 +372,13 @@ class kLLMmeans(BaseEstimator, ClusterMixin):
                         summary, stats = future.result()
                         summaries[i] = summary
                         cluster_stats[i] = stats
+                        if self.verbose and int(stats["n_texts"]) > 0:
+                            print(
+                                f"[iter {iteration}] finished summary for cluster {i}: "
+                                f"{int(stats['latency_s'] * 1000)}ms, "
+                                f"input_chars={int(stats['input_chars'])}, "
+                                f"summary_chars={int(stats['summary_chars'])}"
+                            )
                         completed += 1
                         progress_bar.update(1)
                         if self.verbose and (completed % 10 == 0 or completed == self.n_clusters):
