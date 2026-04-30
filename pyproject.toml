@@ -3,6 +3,7 @@ name = "k-llmmeans"
 version = "0.1.0"
 description = "k-LLMmeans clustering algorithm"
 readme = "README.md"
+license = "MIT"
 authors = [
     { name = "Joël Weber", email = "joel@joelweber.nl" }
 ]
@@ -12,6 +13,9 @@ dependencies = [
     "python-dotenv>=1.2.2",
     "scikit-learn>=1.7.2",
     "tqdm>=4.67.1",
+]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
 ]
 
 [project.scripts]
