@@ -14,7 +14,7 @@ from sklearn.metrics import pairwise_distances_argmin
 from sklearn.utils.validation import check_is_fitted
 from tqdm.auto import tqdm
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 __all__ = ["kLLMmeans"]
 
 load_dotenv()

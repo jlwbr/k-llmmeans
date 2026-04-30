@@ -1,13 +1,13 @@
 [project]
 name = "k-llmmeans"
-version = "0.1.1"
+version = "0.1.2"
 description = "k-LLMmeans clustering algorithm"
 readme = "README.md"
 license = "MIT"
 authors = [
     { name = "Joël Weber", email = "joel@joelweber.nl" }
 ]
-requires-python = ">=3.13"
+requires-python = ">=3.10"
 dependencies = [
     "dspy>=3.2.0",
     "python-dotenv>=1.2.2",
