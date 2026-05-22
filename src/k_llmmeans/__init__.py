@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import as_completed
 from typing import Any, Callable, Mapping
 
-import dspy
+import litellm
 import numpy as np
 from dotenv import load_dotenv
 from sklearn.base import BaseEstimator, ClusterMixin
@@ -14,19 +14,46 @@ from sklearn.metrics import pairwise_distances_argmin
 from sklearn.utils.validation import check_is_fitted
 from tqdm.auto import tqdm
 
-__version__ = "0.1.3"
+__version__ = "0.2.0"
 __all__ = ["kLLMmeans"]
 
 load_dotenv()
 
-cluster_summarizer = dspy.Predict("prompt, text_type -> summary")
 
-def summarize_cluster_with_dspy(
-    texts: list[str], prompt: str = "", text_type: str = ""
-) -> str:
+def _usage_from_response(response: Any) -> dict[str, int]:
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    prompt_tokens = int(
+        getattr(usage, "prompt_tokens", None)
+        or getattr(usage, "input_tokens", None)
+        or 0
+    )
+    completion_tokens = int(
+        getattr(usage, "completion_tokens", None)
+        or getattr(usage, "output_tokens", None)
+        or 0
+    )
+    total_tokens = int(getattr(usage, "total_tokens", None) or 0)
+    if total_tokens == 0:
+        total_tokens = prompt_tokens + completion_tokens
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+    }
+
+
+def summarize_cluster_with_litellm(
+    texts: list[str],
+    prompt: str = "",
+    text_type: str = "",
+    *,
+    llm_kwargs: Mapping[str, Any] | None = None,
+) -> tuple[str, dict[str, int]]:
     cluster_text = "\n".join(t for t in texts if t.strip())
     if not cluster_text:
-        return ""
+        return "", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
     if not prompt:
         prompt = (
@@ -37,9 +64,19 @@ def summarize_cluster_with_dspy(
         prompt = f"{prompt}\n\n{cluster_text}"
 
     text_type = text_type or "Sentence:"
+    user_content = f"{text_type}\n{prompt}" if text_type else prompt
 
-    out = cluster_summarizer(prompt=prompt, text_type=text_type)
-    return (out.summary or "").strip()
+    kwargs = dict(llm_kwargs or {})
+    if "model" not in kwargs:
+        raise ValueError("llm_kwargs must include a 'model' for LiteLLM completion.")
+
+    response = litellm.completion(
+        messages=[{"role": "user", "content": user_content}],
+        **kwargs,
+    )
+    message = response.choices[0].message
+    summary = (getattr(message, "content", None) or "").strip()
+    return summary, _usage_from_response(response)
 
 
 class kLLMmeans(BaseEstimator, ClusterMixin):
@@ -51,7 +88,7 @@ class kLLMmeans(BaseEstimator, ClusterMixin):
         summarizer_fn: Callable[[list[str]], str] | None = None,
         prompt: str = "",
         text_type: str = "",
-        llm: dspy.LM | str | None = None,
+        llm: str | Mapping[str, Any] | None = None,
         summary_workers: int = 1,
         show_progress: bool = False,
         verbose: bool = False,
@@ -90,23 +127,46 @@ class kLLMmeans(BaseEstimator, ClusterMixin):
             return self.embedding_fn
         return self._build_default_embedding_fn(text_data)
 
-    def _resolve_summarizer(self) -> Callable[[list[str]], str]:
+    def _resolve_summarizer(
+        self, llm_kwargs: Mapping[str, Any]
+    ) -> Callable[[list[str]], tuple[str, dict[str, int]]]:
         if self.summarizer_fn is not None:
-            return self.summarizer_fn
-        return lambda texts: summarize_cluster_with_dspy(
-            texts, prompt=self.prompt, text_type=self.text_type
+
+            def wrap_custom(texts: list[str]) -> tuple[str, dict[str, int]]:
+                return self.summarizer_fn(texts), {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                }
+
+            return wrap_custom
+        return lambda texts: summarize_cluster_with_litellm(
+            texts,
+            prompt=self.prompt,
+            text_type=self.text_type,
+            llm_kwargs=llm_kwargs,
         )
 
-    def _resolve_llm(self) -> dspy.LM:
-        if isinstance(self.llm, dspy.LM):
-            return self.llm
+    def _resolve_llm(self) -> dict[str, Any]:
+        if isinstance(self.llm, Mapping):
+            return dict(self.llm)
         if isinstance(self.llm, str):
-            return dspy.LM(self.llm, api_key=os.getenv("OPENAI_API_KEY"))
-        if dspy.settings.lm is not None:
-            return dspy.settings.lm
+            kwargs: dict[str, Any] = {"model": self.llm}
+            api_key = os.getenv("OPENAI_API_KEY")
+            if api_key:
+                kwargs["api_key"] = api_key
+            return kwargs
+        model = os.getenv("LITELLM_MODEL") or os.getenv("OPENAI_MODEL")
+        if model:
+            kwargs = {"model": model}
+            api_key = os.getenv("OPENAI_API_KEY")
+            if api_key:
+                kwargs["api_key"] = api_key
+            return kwargs
         raise ValueError(
-            "No LLM configured. Pass llm='openai/gpt-5-mini' (or another model) "
-            "to kLLMmeans, or configure dspy globally with dspy.configure(lm=...)."
+            "No LLM configured. Pass llm='openai/gpt-4o-mini' (or another model) "
+            "to kLLMmeans, set LITELLM_MODEL / OPENAI_MODEL, or pass llm as a "
+            "dict of LiteLLM completion kwargs."
         )
 
     def _sanitize_embeddings(self, arr, name: str) -> np.ndarray:
@@ -208,27 +268,13 @@ class kLLMmeans(BaseEstimator, ClusterMixin):
         return self._sanitize_embeddings(out, name)
 
     @staticmethod
-    def _history_slice(lm: dspy.LM, start_idx: int) -> list[dict[str, Any]]:
-        history = getattr(lm, "history", None)
-        if not isinstance(history, list):
-            return []
-        return [h for h in history[start_idx:] if isinstance(h, dict)]
-
-    @staticmethod
-    def _sum_usage_from_history(entries: list[dict[str, Any]]) -> dict[str, int]:
+    def _sum_usage(usages: list[dict[str, int]]) -> dict[str, int]:
         prompt_tokens = 0
         completion_tokens = 0
         total_tokens = 0
-        for entry in entries:
-            usage = entry.get("usage")
-            if not isinstance(usage, dict):
-                continue
-            prompt_tokens += int(
-                usage.get("prompt_tokens", usage.get("input_tokens", 0)) or 0
-            )
-            completion_tokens += int(
-                usage.get("completion_tokens", usage.get("output_tokens", 0)) or 0
-            )
+        for usage in usages:
+            prompt_tokens += int(usage.get("prompt_tokens", 0) or 0)
+            completion_tokens += int(usage.get("completion_tokens", 0) or 0)
             total_tokens += int(usage.get("total_tokens", 0) or 0)
         if total_tokens == 0:
             total_tokens = prompt_tokens + completion_tokens
@@ -253,8 +299,8 @@ class kLLMmeans(BaseEstimator, ClusterMixin):
             raise ValueError("summary_workers must be >= 1.")
 
         embedding_fn = self._resolve_embedding_fn(X)
-        summarizer = self._resolve_summarizer()
-        resolved_lm = self._resolve_llm()
+        llm_kwargs = self._resolve_llm() if self.summarizer_fn is None else {}
+        summarizer = self._resolve_summarizer(llm_kwargs)
 
         doc_features = self._get_embeddings_with_precomputed(
             X,
@@ -310,11 +356,15 @@ class kLLMmeans(BaseEstimator, ClusterMixin):
                         "input_chars": 0,
                         "summary_chars": 0,
                         "latency_s": 0.0,
+                        "usage": {
+                            "prompt_tokens": 0,
+                            "completion_tokens": 0,
+                            "total_tokens": 0,
+                        },
                     }
                 input_chars = sum(len(t) for t in cur_texts)
                 t0 = time.perf_counter()
-                with dspy.context(lm=resolved_lm):
-                    summary = summarizer(cur_texts)
+                summary, usage = summarizer(cur_texts)
                 latency_s = time.perf_counter() - t0
                 return summary, {
                     "cluster": i,
@@ -322,9 +372,9 @@ class kLLMmeans(BaseEstimator, ClusterMixin):
                     "input_chars": input_chars,
                     "summary_chars": len(summary),
                     "latency_s": latency_s,
+                    "usage": usage,
                 }
 
-            history_before = len(getattr(resolved_lm, "history", []) or [])
             summary_start = time.perf_counter()
             if self.verbose:
                 print(
@@ -396,8 +446,12 @@ class kLLMmeans(BaseEstimator, ClusterMixin):
                 print(f"[iter {iteration}] generated {len(summaries)} summaries")
             if self.verbose or self.show_progress:
                 summaries_per_sec = len(summaries) / max(summary_elapsed, 1e-9)
-                history_after_entries = self._history_slice(resolved_lm, history_before)
-                usage = self._sum_usage_from_history(history_after_entries)
+                usage_rows = [
+                    s["usage"]
+                    for s in cluster_stats
+                    if s is not None and isinstance(s.get("usage"), dict)
+                ]
+                usage = self._sum_usage(usage_rows)
                 msg = (
                     f"[iter {iteration}] summary step: "
                     f"{summary_elapsed:.2f}s total, {summaries_per_sec:.2f} summaries/s"
@@ -491,7 +545,7 @@ class kLLMmeans(BaseEstimator, ClusterMixin):
         self.n_iter_ = n_iter
         self.n_features_in_ = doc_features.shape[1]
         self._embedding_fn_resolved = embedding_fn
-        self._llm_resolved = resolved_lm
+        self._llm_kwargs_resolved = llm_kwargs if self.summarizer_fn is None else None
         return self
 
     def predict(

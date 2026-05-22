@@ -15,7 +15,7 @@ This package adapts the original research code into an estimator API you can use
   - `predict(X)`
   - `fit_predict(X)`
 - configurable document embedding function (`embedding_fn`)
-- configurable cluster summarization function (`summarizer_fn`) or DSPy-backed LLM summarization
+- configurable cluster summarization function (`summarizer_fn`) or LiteLLM-backed LLM summarization
 - optional precomputed embedding support for faster iterative experimentation
 
 ## Installation
@@ -33,11 +33,7 @@ pip install -e .
 ## Quick Start
 
 ```python
-import dspy
 from k_llmmeans import kLLMmeans
-
-# Option 1: pass an LM directly to the estimator
-lm = dspy.LM("openai/gpt-5-mini")
 
 docs = [
     "How to optimize SQL queries for large tables?",
@@ -48,7 +44,7 @@ docs = [
 
 model = kLLMmeans(
     n_clusters=2,
-    llm=lm,
+    llm="openai/gpt-4o-mini",
     max_llm_iter=5,
     random_state=0,
 )
@@ -57,6 +53,22 @@ labels = model.fit_predict(docs)
 print(labels)
 print(model.summaries_)  # human-readable cluster summaries
 ```
+
+## LiteLLM Configuration
+
+Pass a model string (any [LiteLLM-supported model](https://docs.litellm.ai/docs/providers)) or a dict of kwargs forwarded to `litellm.completion`:
+
+```python
+model = kLLMmeans(
+    n_clusters=2,
+    llm={
+        "model": "openai/gpt-4o-mini",
+        "temperature": 0.2,
+    },
+)
+```
+
+You can also set `LITELLM_MODEL` or `OPENAI_MODEL` in the environment instead of passing `llm`.
 
 ## Using Custom Embeddings and Summarization
 
